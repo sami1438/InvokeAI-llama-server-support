@@ -35,6 +35,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PiPencilSimpleBold, PiSparkleBold } from 'react-icons/pi';
 import { useListSystemPromptsQuery } from 'services/api/endpoints/systemPrompts';
+import { useExpandPromptLlamaServerMutation, useGetLlamaServerConfigQuery } from 'services/api/endpoints/llamaServer';
 import { useExpandPromptMutation } from 'services/api/endpoints/utilities';
 import { useTextLLMModels } from 'services/api/hooks/modelsByType';
 import type { AnyModelConfig } from 'services/api/types';
@@ -44,6 +45,8 @@ import { v4 as uuidv4 } from 'uuid';
 const loadingStyles: SystemStyleObject = {
   svg: { animation: spinAnimation },
 };
+
+type TextProvider = 'invokeai' | 'external';
 
 export const ExpandPromptButton = memo(() => {
   const { t } = useTranslation();
@@ -55,9 +58,23 @@ export const ExpandPromptButton = memo(() => {
   const popover = useDisclosure(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const { data: systemPrompts } = useListSystemPromptsQuery();
-  const [expandPrompt, { isLoading }] = useExpandPromptMutation();
 
-  const hasModels = modelConfigs.length > 0;
+  // Local InvokeAI text LLM
+  const [expandPrompt, { isLoading: isLocalLoading }] = useExpandPromptMutation();
+
+  // External llama server
+  const { data: llamaConfig } = useGetLlamaServerConfigQuery();
+  const [expandPromptLlamaServer, { isLoading: isExternalLoading }] = useExpandPromptLlamaServerMutation();
+
+  const hasLocalModels = modelConfigs.length > 0;
+  const isExternalEnabled = llamaConfig?.enabled && !!llamaConfig.url;
+
+  const hasAnyProvider = hasLocalModels || isExternalEnabled;
+
+  // Default provider
+  const [textProvider, setTextProvider] = useState<TextProvider>(
+    isExternalEnabled && !hasLocalModels ? 'external' : 'invokeai'
+  );
 
   const selectedModel = useMemo<AnyModelConfig | undefined>(
     () => modelConfigs.find((m) => m.key === selectedModelKey),
@@ -106,22 +123,41 @@ export const ExpandPromptButton = memo(() => {
 
   const noOptionsMessage = useCallback(() => t('systemPrompts.noPromptsYet'), [t]);
 
+  const isLoading = isLocalLoading || isExternalLoading;
+
   const handleExpand = useCallback(async () => {
-    if (!selectedModel || !prompt.trim()) {
+    if (!prompt.trim()) {
       return;
     }
+
     const newTaskId = uuidv4();
     setTaskId(newTaskId);
+
     try {
-      const result = await expandPrompt({
-        prompt,
-        model_key: selectedModel.key,
-        system_prompt: selectedSystemPrompt?.content,
-        task_id: newTaskId,
-      }).unwrap();
-      if (result.expanded_prompt) {
-        setPromptUndo(prompt);
-        dispatch(positivePromptChanged(result.expanded_prompt));
+      if (textProvider === 'external') {
+        const result = await expandPromptLlamaServer({
+          prompt,
+          system_prompt: selectedSystemPrompt?.content,
+          task_id: newTaskId,
+        }).unwrap();
+        if (result.expanded_prompt) {
+          setPromptUndo(prompt);
+          dispatch(positivePromptChanged(result.expanded_prompt));
+        }
+      } else {
+        if (!selectedModel) {
+          return;
+        }
+        const result = await expandPrompt({
+          prompt,
+          model_key: selectedModel.key,
+          system_prompt: selectedSystemPrompt?.content,
+          task_id: newTaskId,
+        }).unwrap();
+        if (result.expanded_prompt) {
+          setPromptUndo(prompt);
+          dispatch(positivePromptChanged(result.expanded_prompt));
+        }
       }
       popover.close();
     } catch {
@@ -130,13 +166,28 @@ export const ExpandPromptButton = memo(() => {
       clearLLMTaskState(newTaskId);
       setTaskId(null);
     }
-  }, [selectedModel, prompt, expandPrompt, selectedSystemPrompt, dispatch, popover]);
+  }, [
+    textProvider,
+    prompt,
+    selectedModel,
+    selectedSystemPrompt,
+    expandPrompt,
+    expandPromptLlamaServer,
+    dispatch,
+    popover,
+  ]);
 
   const handleOpenModelManager = useCallback(() => {
     popover.close();
     navigationApi.switchToTab('models');
     setInstallModelsTabByName('starterModels');
   }, [popover]);
+
+  const canExpand = useMemo(() => {
+    if (!prompt.trim()) return false;
+    if (textProvider === 'external') return isExternalEnabled;
+    return !!selectedModel;
+  }, [prompt, textProvider, isExternalEnabled, selectedModel]);
 
   return (
     <Popover
@@ -149,14 +200,14 @@ export const ExpandPromptButton = memo(() => {
     >
       <PopoverTrigger>
         <span>
-          <Tooltip label={hasModels ? t('prompt.expandPromptWithLLM') : t('prompt.noTextLLMInstalledTitle')}>
+          <Tooltip label={hasAnyProvider ? t('prompt.expandPromptWithLLM') : t('prompt.noTextLLMInstalledTitle')}>
             <IconButton
               size="sm"
               variant="promptOverlay"
               aria-label={t('prompt.expandPromptWithLLM')}
               icon={<PiSparkleBold />}
               sx={isLoading ? loadingStyles : undefined}
-              isDisabled={isLoading || (hasModels && !prompt.trim())}
+              isDisabled={isLoading || (hasAnyProvider && !prompt.trim())}
             />
           </Tooltip>
         </span>
@@ -165,12 +216,40 @@ export const ExpandPromptButton = memo(() => {
         <PopoverContent p={3} w={380}>
           <PopoverArrow />
           <PopoverBody p={0}>
-            {hasModels ? (
+            {hasAnyProvider ? (
               <Flex flexDir="column" gap={3}>
                 <Text fontWeight="semibold" fontSize="sm">
                   {t('prompt.expandPrompt')}
                 </Text>
 
+                {/* Provider selector - only show if both providers are available */}
+                {hasLocalModels && isExternalEnabled && (
+                  <FormControl orientation="vertical">
+                    <FormLabel m={0} fontSize="xs">
+                      {t('prompt.textProvider')}
+                    </FormLabel>
+                    <Flex gap={2}>
+                      <Button
+                        size="xs"
+                        variant={textProvider === 'invokeai' ? 'solid' : 'outline'}
+                        onClick={() => setTextProvider('invokeai')}
+                        flex={1}
+                      >
+                        {t('prompt.invokeAIModel')}
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant={textProvider === 'external' ? 'solid' : 'outline'}
+                        onClick={() => setTextProvider('external')}
+                        flex={1}
+                      >
+                        {t('prompt.externalLlamaServer')}
+                      </Button>
+                    </Flex>
+                  </FormControl>
+                )}
+
+                {/* System prompt picker - shown for both providers */}
                 <FormControl orientation="vertical">
                   <FormLabel m={0}>{t('systemPrompts.systemPrompt')}</FormLabel>
                   <Flex gap={2} alignItems="center" w="full">
@@ -196,20 +275,31 @@ export const ExpandPromptButton = memo(() => {
                   </Flex>
                 </FormControl>
 
-                <ModelPicker
-                  pickerId="expand-prompt-model"
-                  modelConfigs={modelConfigs}
-                  selectedModelConfig={selectedModel}
-                  onChange={handleModelChange}
-                  placeholder={t('prompt.selectTextLLM')}
-                />
+                {/* Model picker for InvokeAI provider */}
+                {textProvider === 'invokeai' && (
+                  <ModelPicker
+                    pickerId="expand-prompt-model"
+                    modelConfigs={modelConfigs}
+                    selectedModelConfig={selectedModel}
+                    onChange={handleModelChange}
+                    placeholder={t('prompt.selectTextLLM')}
+                  />
+                )}
+
+                {/* External model name display */}
+                {textProvider === 'external' && llamaConfig?.text_model && (
+                  <Flex fontSize="xs" color="base.400">
+                    {t('prompt.externalTextModel')}: {llamaConfig.text_model}
+                  </Flex>
+                )}
+
                 {isLoading ? <LLMTaskProgressDisplay taskId={taskId} /> : null}
                 <Button
                   size="sm"
                   colorScheme="invokeBlue"
                   onClick={handleExpand}
                   isLoading={isLoading}
-                  isDisabled={!selectedModel || !prompt.trim()}
+                  isDisabled={!canExpand}
                 >
                   {t('prompt.expand')}
                 </Button>
