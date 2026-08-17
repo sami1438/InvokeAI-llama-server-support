@@ -31,6 +31,7 @@ import { SettingsDeveloperLogNamespaces } from 'features/system/components/Setti
 import { SettingsGenerationDevices } from 'features/system/components/SettingsModal/SettingsGenerationDevices';
 import { SettingsImageStorageMaintenance } from 'features/system/components/SettingsModal/SettingsImageStorageMaintenance';
 import { SettingsImageSubfolderStrategySelect } from 'features/system/components/SettingsModal/SettingsImageSubfolderStrategySelect';
+import { SettingsExternalLlamaServer } from 'features/system/components/SettingsModal/SettingsExternalLlamaServer';
 import { useClearIntermediates } from 'features/system/components/SettingsModal/useClearIntermediates';
 import { StickyScrollable } from 'features/system/components/StickyScrollable';
 import {
@@ -340,6 +341,7 @@ const SettingsModal = (props: { children: ReactElement<{ onClick?: () => void }>
 
                   <StickyScrollable title={t('settings.models')}>
                     <ExternalProviderStatusList />
+                    <SettingsExternalLlamaServer />
                   </StickyScrollable>
 
                   <StickyScrollable title={t('settings.ui')}>
